@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MPU6050 · ESP32 姿态解算台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2l8 4.6v9.2L12 21l-8-4.6V6.6L12 2zm0 2.1L5.8 8 12 11.9 18.2 8 12 4.1zM4.5 8.2v7.3l6.2 3.6v-7.3L4.5 8.2zm15 0l-6.2 3.6v7.3l6.2-3.6V8.2z' fill='%2338bdf8'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#0a0f1a; --panel:#111a2c; --panel2:#0d1524; --line:#22314a;
+  --tx:#e2e8f0; --dim:#8fa3bd; --faint:#5b6f8c;
+  --acc:#38bdf8; --ok:#34d399; --err:#f87171; --warn:#fbbf24;
+  --roll:#f87171; --pitch:#4ade80; --yaw:#38bdf8;
+  --mono:"Cascadia Mono","Consolas","Courier New",monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--tx);font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;display:flex;flex-direction:column;overflow:hidden}
+
+/* ---------- 顶栏 ---------- */
+header{display:flex;align-items:center;gap:14px;padding:10px 18px;border-bottom:1px solid var(--line);background:var(--panel2);flex:0 0 auto}
+.brand{display:flex;align-items:center;gap:10px}
+.brand svg{width:22px;height:22px;flex:0 0 auto}
+.brand h1{font-size:16px;font-weight:600;letter-spacing:.3px}
+.brand h1 em{font-style:normal;color:var(--acc)}
+.status-line{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dim);min-width:0}
+.status-line .sub{color:var(--faint);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46vw}
+.dot{width:9px;height:9px;border-radius:50%;background:#3b4a63;flex:0 0 auto}
+.dot.on{background:var(--ok);box-shadow:0 0 8px rgba(52,211,153,.8)}
+.dot.err{background:var(--err);box-shadow:0 0 8px rgba(248,113,113,.8)}
+
+/* ---------- 主体布局 ---------- */
+main{flex:1;min-height:0;display:grid;grid-template-columns:300px minmax(0,1fr) 322px;grid-template-rows:minmax(0,1fr);gap:10px;padding:10px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;min-height:0;overflow-y:auto}
+.panel section{padding:10px 14px;border-bottom:1px solid var(--line)}
+.panel section:last-child{border-bottom:none}
+.panel section h3{font-size:12px;color:var(--faint);letter-spacing:.6px;font-weight:600;margin-bottom:8px}
+.panel section h3::after{content:"";display:block;width:26px;height:2px;background:var(--acc);margin-top:5px;border-radius:1px}
+
+/* ---------- 控件 ---------- */
+.row{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.btn{border:1px solid var(--line);background:var(--panel2);color:var(--tx);border-radius:7px;padding:8px 14px;font-size:13px;cursor:pointer;transition:border-color .15s,background .15s}
+.btn:hover{border-color:var(--acc)}
+.btn:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.btn.primary{background:#0e2a3d;border-color:#155e86;color:#7dd3fc}
+.btn.primary:hover{background:#103348}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+select{background:var(--panel2);color:var(--tx);border:1px solid var(--line);border-radius:7px;padding:7px 8px;font-size:13px}
+.hint{font-size:12px;color:var(--faint);line-height:1.5;margin-top:2px}
+.chk{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dim);padding:4px 0;cursor:pointer}
+.chk input{accent-color:var(--acc);width:15px;height:15px}
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:12px}
+.seg-btn{flex:1;cursor:pointer}
+.seg-btn input{display:none}
+.seg-btn span{display:block;text-align:center;padding:7px 0;font-size:13px;color:var(--dim);background:var(--panel2);transition:background .15s,color .15s}
+.seg-btn input:checked+span{background:var(--acc);color:#07111f;font-weight:600}
+#simCtl{transition:opacity .15s}
+#simCtl.disabled{opacity:.4;pointer-events:none}
+.slider-row{display:grid;grid-template-columns:44px 1fr 52px;gap:8px;align-items:center;margin-bottom:8px;font-size:13px;color:var(--dim)}
+.slider-row b{text-align:right;color:var(--tx);font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:600}
+.slider-row input[type=range]{width:100%;accent-color:var(--acc);cursor:pointer}
+
+/* ---------- 3D 视口 ---------- */
+.stage{padding:0}
+.stage-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);flex:0 0 auto}
+.stage-head h3{font-size:12px;color:var(--faint);letter-spacing:.6px;font-weight:600}
+.stage-head .legend{font-size:12px;color:var(--dim)}
+.stage-wrap{position:relative;flex:1;min-height:0;border-radius:0 0 10px 10px;overflow:hidden}
+#view3d{position:absolute;inset:0;width:100%;height:100%;display:block}
+.stage-err{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;color:var(--err);font-size:14px;background:rgba(10,15,26,.7)}
+
+/* ---------- 右栏 ---------- */
+.read{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px}
+.read.small{grid-template-columns:1fr 1fr;margin-bottom:12px}
+.read-item{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:9px 10px}
+.read-item span{display:block;font-size:11px;color:var(--faint);margin-bottom:5px}
+.read-item b{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:17px;font-weight:600;color:var(--tx)}
+.rate{display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--dim)}
+.rate b{font-family:var(--mono);color:var(--acc);font-weight:600}
+#chartCanvas{width:100%;height:150px;display:block;background:var(--panel2);border:1px solid var(--line);border-radius:8px}
+.chart-legend{display:flex;gap:14px;margin-top:8px;font-size:12px;color:var(--dim)}
+.chart-legend .k{display:flex;align-items:center;gap:6px}
+.chart-legend .k::before{content:"";width:14px;height:3px;border-radius:2px}
+.k.roll::before{background:var(--roll)} .k.pitch::before{background:var(--pitch)} .k.yaw::before{background:var(--yaw)}
+
+/* ---------- 底栏 ---------- */
+footer{flex:0 0 auto;padding:8px 18px;border-top:1px solid var(--line);font-size:12px;color:var(--faint);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:var(--panel2)}
+
+/* ---------- 响应式 ---------- */
+@media (max-width:1080px){
+  body{overflow:auto}
+  main{display:flex;flex-direction:column;overflow:visible;flex:1 0 auto}
+  .panel{flex:0 0 auto;min-height:0;overflow:visible}
+  .stage{height:460px}
+  footer{white-space:normal}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l8 4.6v9.2L12 21l-8-4.6V6.6L12 2zm0 2.1L5.8 8 12 11.9 18.2 8 12 4.1zM4.5 8.2v7.3l6.2 3.6v-7.3L4.5 8.2zm15 0l-6.2 3.6v7.3l6.2-3.6V8.2z" fill="#38bdf8"/></svg>
+    <h1>MPU6050 · ESP32 <em>姿态解算台</em></h1>
+  </div>
+  <div class="status-line">
+    <span class="dot" id="statusDot"></span>
+    <span id="statusText">未连接</span>
+    <span id="statusSub" class="sub">上电姿态自动归零</span>
+  </div>
+</header>
+<main>
+  <!-- ===== 左栏：控制 ===== -->
+  <aside class="panel">
+    <section>
+      <h3>数据通道</h3>
+      <div class="row">
+        <button id="connectBtn" class="btn primary">连接串口</button>
+        <button id="disconnectBtn" class="btn" disabled>断开</button>
+      </div>
+      <div class="row">
+        <label for="baudSel" style="font-size:13px;color:var(--dim)">波特率</label>
+        <select id="baudSel">
+          <option value="115200" selected>115200</option>
+          <option value="57600">57600</option>
+          <option value="921600">921600</option>
+        </select>
+      </div>
+      <p class="hint">串口读取依赖 Web Serial：请用桌面版 Chrome / Edge，并确保页面通过 http://localhost 访问。</p>
+    </section>
+    <section>
+      <h3>姿态参考</h3>
+      <div class="row">
+        <button id="zeroBtn" class="btn">重新归零</button>
+      </div>
+      <p class="hint">以当前姿态为 0 初始位置。设备上电时已自动完成一次归零。</p>
+    </section>
+    <section>
+      <h3>轴反向校正</h3>
+      <label class="chk"><input type="checkbox" id="invX"> 反向 X（前 / 后）</label>
+      <label class="chk"><input type="checkbox" id="invY"> 反向 Y（左 / 右）</label>
+      <label class="chk"><input type="checkbox" id="invZ"> 反向 Z（上 / 下）</label>
+      <p class="hint">传感器安装方向与模型轴不一致时，勾选对应轴即可校正。</p>
+    </section>
+    <section>
+      <h3>模拟模式</h3>
+      <div class="seg" role="radiogroup" aria-label="数据模式">
+        <label class="seg-btn"><input type="radio" name="mode" value="live" checked><span>实时</span></label>
+        <label class="seg-btn"><input type="radio" name="mode" value="sim"><span>模拟</span></label>
+      </div>
+      <div id="simCtl">
+        <div class="slider-row"><span>横滚</span><input type="range" id="rollSl" min="-180" max="180" step="1" value="0"><b id="rollVal">0°</b></div>
+        <div class="slider-row"><span>俯仰</span><input type="range" id="pitchSl" min="-90" max="90" step="1" value="0"><b id="pitchVal">0°</b></div>
+        <div class="slider-row"><span>偏航</span><input type="range" id="yawSl" min="-180" max="180" step="1" value="0"><b id="yawVal">0°</b></div>
+        <label class="chk"><input type="checkbox" id="autoDemo"> 自动演示（正弦摆动）</label>
+        <p class="hint">模拟模式下可直接在 3D 模型上按住拖动旋转。</p>
+      </div>
+    </section>
+  </aside>
+
+  <!-- ===== 中栏：3D 视口 ===== -->
+  <section class="panel stage">
+    <div class="stage-head">
+      <h3>3D 姿态</h3>
+      <span class="legend">X 红 · 前向　Y 绿 · 右翼　Z 蓝 · 向上</span>
+    </div>
+    <div class="stage-wrap">
+      <canvas id="view3d"></canvas>
+      <div id="stageErr" class="stage-err" hidden></div>
+    </div>
+  </section>
+
+  <!-- ===== 右栏：读数与曲线 ===== -->
+  <aside class="panel">
+    <section>
+      <h3>实时读数</h3>
+      <div class="read">
+        <div class="read-item"><span>横滚 roll</span><b id="liveRoll">0.0°</b></div>
+        <div class="read-item"><span>俯仰 pitch</span><b id="livePitch">0.0°</b></div>
+        <div class="read-item"><span>偏航 yaw</span><b id="liveYaw">0.0°</b></div>
+      </div>
+      <div class="read small">
+        <div class="read-item"><span>四元数 w</span><b id="liveQ0">1.0000</b></div>
+        <div class="read-item"><span>四元数 x</span><b id="liveQ1">0.0000</b></div>
+        <div class="read-item"><span>四元数 y</span><b id="liveQ2">0.0000</b></div>
+        <div class="read-item"><span>四元数 z</span><b id="liveQ3">0.0000</b></div>
+      </div>
+      <div class="rate"><span>数据率</span><b id="liveRate">0 帧/秒</b></div>
+    </section>
+    <section>
+      <h3>姿态曲线 · 最近 15 秒</h3>
+      <canvas id="chartCanvas"></canvas>
+      <div class="chart-legend">
+        <span class="k roll">横滚</span><span class="k pitch">俯仰</span><span class="k yaw">偏航</span>
+      </div>
+    </section>
+  </aside>
+</main>
+<footer>接线：VCC→3V3 · GND→GND · SCL→GPIO22 · SDA→GPIO21 · AD0→GND　|　固件：MPU6050_Attitude.ino（I2C + Mahony 滤波 + 上电归零，串口 115200 输出 JSON）</footer>
+
+<script src="three.min.js"></script>
+<script src="OrbitControls.js"></script>
+<script>
+(function () {
+'use strict';
+
+/* ========== 数学工具 ========== */
+const $ = id => document.getElementById(id);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const RAD = Math.PI / 180;
+
+/* 四元数 [w,x,y,z]，Hamilton 乘法 */
+function qMul(a, b) {
+  return [
+    a[0]*b[0] - a[1]*b[1] - a[2]*b[2] - a[3]*b[3],
+    a[0]*b[1] + a[1]*b[0] + a[2]*b[3] - a[3]*b[2],
+    a[0]*b[2] - a[1]*b[3] + a[2]*b[0] + a[3]*b[1],
+    a[0]*b[3] + a[1]*b[2] - a[2]*b[1] + a[3]*b[0]
+  ];
+}
+function qConj(q) { return [q[0], -q[1], -q[2], -q[3]]; }
+function quatToEuler(q) {
+  const w=q[0], x=q[1], y=q[2], z=q[3];
+  const roll = Math.atan2(2*(w*x + y*z), 1 - 2*(x*x + y*y));
+  const sp = clamp(2*(w*y - z*x), -1, 1);
+  const pitch = Math.asin(sp);
+  const yaw = Math.atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z));
+  return { roll: roll/RAD, pitch: pitch/RAD, yaw: yaw/RAD };
+}
+function eulerToQuat(rollDeg, pitchDeg, yawDeg) {
+  const r=rollDeg*RAD, p=pitchDeg*RAD, y=yawDeg*RAD;
+  const cr=Math.cos(r/2), sr=Math.sin(r/2), cp=Math.cos(p/2), sp=Math.sin(p/2), cy=Math.cos(y/2), sy=Math.sin(y/2);
+  const qr=[cr,sr,0,0], qp=[cp,0,sp,0], qy=[cy,0,0,sy];
+  return qMul(qMul(qy, qp), qr);
+}
+
+/* ========== DOM ========== */
+const els = {
+  statusDot:$('statusDot'), statusText:$('statusText'), statusSub:$('statusSub'),
+  connectBtn:$('connectBtn'), disconnectBtn:$('disconnectBtn'), baudSel:$('baudSel'),
+  zeroBtn:$('zeroBtn'), invX:$('invX'), invY:$('invY'), invZ:$('invZ'),
+  rollSl:$('rollSl'), pitchSl:$('pitchSl'), yawSl:$('yawSl'),
+  rollVal:$('rollVal'), pitchVal:$('pitchVal'), yawVal:$('yawVal'),
+  autoDemo:$('autoDemo'), simCtl:$('simCtl'),
+  liveRoll:$('liveRoll'), livePitch:$('livePitch'), liveYaw:$('liveYaw'),
+  liveQ0:$('liveQ0'), liveQ1:$('liveQ1'), liveQ2:$('liveQ2'), liveQ3:$('liveQ3'), liveRate:$('liveRate'),
+  chart:$('chartCanvas'), stageErr:$('stageErr'), view3d:$('view3d')
+};
+const modeRadios = document.querySelectorAll('input[name="mode"]');
+
+/* ========== 状态 ========== */
+let mode = 'live';
+let sensorQ = [1,0,0,0];      // 串口最新四元数
+let qRef = [1,0,0,0];         // 前端归零参考
+let flipQ = [1,0,0,0];        // 轴反向映射
+let dispQ = [1,0,0,0];
+let dispE = {roll:0, pitch:0, yaw:0};
+let frames = 0;
+const hist = { t:[], roll:[], pitch:[], yaw:[] };
+const HMAX = 1600;
+
+/* 串口 */
+let port = null, reader = null, reading = false;
+
+/* ========== 3D 引擎：本地静态文件优先（同步），缺失时 CDN 异步补载 ========== */
+const THREE_MAIN_SOURCES = [
+  'https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js',
+  'https://unpkg.com/three@0.128.0/build/three.min.js'
+];
+const CONTROLS_SOURCES = [
+  'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js',
+  'https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js'
+];
+function loadScript(src, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    const t = setTimeout(() => reject(new Error('timeout: ' + src)), timeoutMs || 8000);
+    s.src = src;
+    s.onload = () => { clearTimeout(t); resolve(); };
+    s.onerror = () => { clearTimeout(t); reject(new Error('error: ' + src)); };
+    document.head.appendChild(s);
+  });
+}
+async function trySources(list, check) {
+  for (const u of list) {
+    try {
+      await loadScript(u, 8000);
+      if (check()) return u;
+    } catch (_) {}
+  }
+  return null;
+}
+async function loadThreeFromCDN() {
+  await trySources(THREE_MAIN_SOURCES, () => typeof THREE !== 'undefined');
+  if (typeof THREE === 'undefined') throw new Error('three.js 加载失败');
+  if (!THREE.OrbitControls) await trySources(CONTROLS_SOURCES, () => !!THREE.OrbitControls);
+}
+
+/* ========== 3D ========== */
+let scene=null, camera=null, renderer=null, controls=null, model=null;
+
+function makeArrow(color, dir) {
+  const mat = new THREE.MeshBasicMaterial({ color });
+  const len = 1.45;
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, len*0.66, 8), mat);
+  shaft.position.y = len*0.33;
+  const tip = new THREE.Mesh(new THREE.ConeGeometry(0.06, len*0.22, 12), mat);
+  tip.position.y = len*0.72;
+  const g = new THREE.Group();
+  g.add(shaft); g.add(tip);
+  g.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir.clone().normalize());
+  return g;
+}
+
+function buildModel() {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(1.7, 0.34, 0.36),
+    new THREE.MeshStandardMaterial({ color:0x3b82f6, roughness:0.42, metalness:0.05 })
+  );
+  body.position.x = 0.1; g.add(body);
+
+  const nose = new THREE.Mesh(
+    new THREE.ConeGeometry(0.17, 0.55, 20),
+    new THREE.MeshStandardMaterial({ color:0xf97316, roughness:0.5, metalness:0 })
+  );
+  nose.rotation.z = -Math.PI/2; nose.position.x = 1.26; g.add(nose);
+
+  const wing = new THREE.Mesh(
+    new THREE.BoxGeometry(0.26, 2.0, 0.06),
+    new THREE.MeshStandardMaterial({ color:0x94a3b8, roughness:0.75, metalness:0.05 })
+  );
+  g.add(wing);
+
+  const tail = new THREE.Mesh(
+    new THREE.BoxGeometry(0.2, 0.62, 0.06),
+    new THREE.MeshStandardMaterial({ color:0x94a3b8, roughness:0.75, metalness:0.05 })
+  );
+  tail.position.set(-0.78, 0.42, 0); g.add(tail);
+
+  const fin = new THREE.Mesh(
+    new THREE.BoxGeometry(0.2, 0.06, 0.52),
+    new THREE.MeshStandardMaterial({ color:0x64748b, roughness:0.75, metalness:0.05 })
+  );
+  fin.position.set(-0.82, 0, 0); g.add(fin);
+
+  g.add(makeArrow(0xf87171, new THREE.Vector3(1,0,0)));
+  g.add(makeArrow(0x4ade80, new THREE.Vector3(0,1,0)));
+  g.add(makeArrow(0x38bdf8, new THREE.Vector3(0,0,1)));
+  return g;
+}
+
+function init3D() {
+  if (typeof THREE === 'undefined') {
+    els.stageErr.hidden = false;
+    els.stageErr.textContent = '无法加载 Three.js：请检查网络（CDN jsDelivr 不可达），并刷新页面重试。';
+    return false;
+  }
+  renderer = new THREE.WebGLRenderer({ canvas: els.view3d, antialias:true, alpha:true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+  camera.position.set(3.6, 2.3, 4.8);
+  camera.lookAt(0, 0, 0);
+
+  /* 光照：主光（形体）+ 半球（环境）+ 轮廓光 */
+  const key = new THREE.DirectionalLight(0xffffff, 0.95);
+  key.position.set(4, 6, 3.5); scene.add(key);
+  scene.add(new THREE.HemisphereLight(0xbdd4ff, 0x2b3648, 0.75));
+  const rim = new THREE.PointLight(0x38bdf8, 0.6, 30);
+  rim.position.set(-4, -2, -3); scene.add(rim);
+
+  controls = new THREE.OrbitControls(camera, els.view3d);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.minDistance = 2.6;
+  controls.maxDistance = 11;
+  controls.minPolarAngle = 0.15;
+  controls.maxPolarAngle = Math.PI * 0.93;
+
+  /* 世界参考：网格 + 罗盘环 */
+  const grid = new THREE.GridHelper(6, 12, 0x2c3d5c, 0x1b2740);
+  grid.position.y = -1.08; scene.add(grid);
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(1.9, 2.02, 72),
+    new THREE.MeshBasicMaterial({ color:0x3b5278, side:THREE.DoubleSide, transparent:true, opacity:0.85 })
+  );
+  ring.rotation.x = -Math.PI/2; ring.position.y = -1.06; scene.add(ring);
+  for (let i = 0; i < 4; i++) {
+    const a = i * Math.PI / 2;
+    const tick = new THREE.Mesh(
+      new THREE.BoxGeometry(0.045, 0.045, 0.3),
+      new THREE.MeshBasicMaterial({ color: i === 0 ? 0xf87171 : 0x55698c })
+    );
+    tick.position.set(1.96 * Math.cos(a), -1.06, 1.96 * Math.sin(a));
+    scene.add(tick);
+  }
+
+  model = buildModel();
+  scene.add(model);
+
+  resize3D();
+  window.addEventListener('resize', resize3D);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && renderer) renderer.render(scene, camera);
+  });
+
+  renderer.render(scene, camera);   /* 首帧在页面 load 前渲染 */
+  return true;
+}
+
+function resize3D() {
+  if (!renderer) return;
+  const w = els.view3d.clientWidth, h = els.view3d.clientHeight;
+  if (!w || !h) return;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h, false);
+}
+
+function setModelQuat(q) { model.quaternion.set(q[1], q[2], q[3], q[0]); }
+
+/* ========== 轴反向 / 姿态更新 ========== */
+function computeFlipQ() {
+  let q = [1,0,0,0];
+  if (els.invX.checked) q = qMul(q, [0,1,0,0]);
+  if (els.invY.checked) q = qMul(q, [0,0,1,0]);
+  if (els.invZ.checked) q = qMul(q, [0,0,0,1]);
+  flipQ = q;
+}
+
+function updatePose() {
+  let src;
+  if (mode === 'live') src = sensorQ;
+  else src = eulerToQuat(+els.rollSl.value, +els.pitchSl.value, +els.yawSl.value);
+  dispQ = qMul(qConj(qRef), qMul(flipQ, src));
+  dispE = quatToEuler(dispQ);
+}
+
+/* ========== 串口（Web Serial） ========== */
+function setStatus(text, kind) {
+  els.statusText.textContent = text;
+  els.statusDot.className = 'dot' + (kind === 'on' ? ' on' : kind === 'err' ? ' err' : '');
+}
+
+async function connectSerial() {
+  if (!('serial' in navigator)) {
+    setStatus('浏览器不支持 Web Serial', 'err');
+    return;
+  }
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: parseInt(els.baudSel.value, 10) });
+    reader = port.readable.getReader();
+    reading = true;
+    els.connectBtn.disabled = true;
+    els.disconnectBtn.disabled = false;
+    setStatus('已连接串口', 'on');
+    readLoop();
+  } catch (e) {
+    port = null; reader = null;
+    setStatus('连接失败：' + e.message, 'err');
+  }
+}
+
+async function readLoop() {
+  const dec = new TextDecoder();
+  let buf = '';
+  try {
+    while (reading && reader) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (line) handleLine(line);
+      }
+    }
+  } catch (e) {
+    if (reading) setStatus('串口读取中断：' + e.message, 'err');
+  } finally {
+    if (reader) { try { reader.releaseLock(); } catch (_) {} reader = null; }
+  }
+}
+
+async function disconnectSerial() {
+  reading = false;
+  if (reader) { try { await reader.cancel(); } catch (_) {} }
+  if (port) { try { await port.close(); } catch (_) {} }
+  port = null;
+  els.connectBtn.disabled = false;
+  els.disconnectBtn.disabled = true;
+  setStatus('已断开', '');
+}
+
+function handleLine(line) {
+  let o;
+  try { o = JSON.parse(line); } catch (_) { return; }
+  if (o.error) { setStatus('设备：' + o.error, 'err'); return; }
+  if (o.msg) { setStatus('设备：' + o.msg, ''); return; }
+  if (typeof o.q0 === 'number' && typeof o.q1 === 'number' &&
+      typeof o.q2 === 'number' && typeof o.q3 === 'number') {
+    sensorQ = [o.q0, o.q1, o.q2, o.q3];
+    frames++;
+    pushSample();
+  }
+}
+
+/* ========== 曲线 ========== */
+function pushSample() {
+  const t = Date.now() / 1000;
+  hist.t.push(t);
+  hist.roll.push(dispE.roll);
+  hist.pitch.push(dispE.pitch);
+  hist.yaw.push(dispE.yaw);
+  if (hist.t.length > HMAX) {
+    hist.t.shift(); hist.roll.shift(); hist.pitch.shift(); hist.yaw.shift();
+  }
+}
+
+function drawChart() {
+  const c = els.chart;
+  if (!c) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = c.clientWidth, h = c.clientHeight;
+  if (!w || !h) return;
+  const bw = Math.floor(w * dpr), bh = Math.floor(h * dpr);
+  if (c.width !== bw || c.height !== bh) { c.width = bw; c.height = bh; }
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const WIN = 15;
+  const now = Date.now() / 1000;
+  const t0 = now - WIN;
+  const X = t => (t - t0) / WIN * w;
+  const Y = v => h * (0.5 - v / 360);
+
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(141,157,184,0.14)';
+  ctx.font = '10px "Cascadia Mono",Consolas,monospace';
+  ctx.fillStyle = '#5b6f8c';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  for (let v = -180; v <= 180; v += 45) {
+    const y = Y(v);
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    if (v !== 0) ctx.fillText(String(v), 3, y + 2);
+  }
+  ctx.strokeStyle = 'rgba(226,232,240,0.4)';
+  ctx.beginPath(); ctx.moveTo(0, Y(0)); ctx.lineTo(w, Y(0)); ctx.stroke();
+  ctx.fillText('0', 3, Y(0) + 2);
+
+  const series = [ ['roll', '#f87171'], ['pitch', '#4ade80'], ['yaw', '#38bdf8'] ];
+  for (const [k, col] of series) {
+    const arr = hist[k];
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < arr.length; i++) {
+      const x = X(hist.t[i]);
+      if (x < 0) continue;
+      const y = Y(arr[i]);
+      if (!started) { ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+}
+
+/* ========== 模拟交互 ========== */
+function syncSliders() {
+  els.rollVal.textContent = els.rollSl.value + '°';
+  els.pitchVal.textContent = els.pitchSl.value + '°';
+  els.yawVal.textContent = els.yawSl.value + '°';
+}
+
+let dragging = false, lastPt = null;
+els.view3d.addEventListener('pointerdown', e => {
+  if (mode !== 'sim') return;
+  dragging = true;
+  lastPt = { x: e.clientX, y: e.clientY };
+  els.view3d.setPointerCapture(e.pointerId);
+});
+els.view3d.addEventListener('pointermove', e => {
+  if (!dragging || mode !== 'sim') return;
+  const dx = e.clientX - lastPt.x, dy = e.clientY - lastPt.y;
+  lastPt = { x: e.clientX, y: e.clientY };
+  els.rollSl.value = clamp(Math.round(+els.rollSl.value + dx * 0.45), -180, 180);
+  els.pitchSl.value = clamp(Math.round(+els.pitchSl.value + dy * 0.45), -90, 90);
+  els.autoDemo.checked = false;
+  syncSliders();
+});
+const stopDrag = () => { dragging = false; lastPt = null; };
+els.view3d.addEventListener('pointerup', stopDrag);
+els.view3d.addEventListener('pointercancel', stopDrag);
+
+/* ========== 模式切换 ========== */
+function setMode(m) {
+  mode = m;
+  const sim = m === 'sim';
+  els.simCtl.classList.toggle('disabled', !sim);
+  els.simCtl.querySelectorAll('input').forEach(i => { i.disabled = !sim; });
+  if (controls) controls.enabled = !sim;
+  if (!sim) qRef = [1,0,0,0];
+}
+modeRadios.forEach(r => r.addEventListener('change', () => { if (r.checked) setMode(r.value); }));
+
+/* ========== 事件绑定 ========== */
+els.connectBtn.addEventListener('click', connectSerial);
+els.disconnectBtn.addEventListener('click', disconnectSerial);
+els.zeroBtn.addEventListener('click', () => {
+  if (mode === 'live') {
+    qRef = qMul(flipQ, sensorQ.slice());
+    els.statusSub.textContent = '已重新归零：当前姿态 = 0°';
+  } else {
+    els.rollSl.value = 0; els.pitchSl.value = 0; els.yawSl.value = 0;
+    syncSliders();
+    els.statusSub.textContent = '已把模拟角度清零';
+  }
+});
+els.invX.addEventListener('change', computeFlipQ);
+els.invY.addEventListener('change', computeFlipQ);
+els.invZ.addEventListener('change', computeFlipQ);
+els.rollSl.addEventListener('input', syncSliders);
+els.pitchSl.addEventListener('input', syncSliders);
+els.yawSl.addEventListener('input', syncSliders);
+
+/* ========== 主循环 ========== */
+let lastUi = 0;
+
+function simTick(now) {
+  if (mode === 'sim' && els.autoDemo.checked) {
+    const t = (now || Date.now()) / 1000;
+    els.rollSl.value = Math.round(clamp(30 * Math.sin(t * 0.9), -180, 180));
+    els.pitchSl.value = Math.round(clamp(25 * Math.sin(t * 0.7 + 1.2), -90, 90));
+    els.yawSl.value = Math.round(clamp(40 * Math.sin(t * 0.4 + 0.6), -180, 180));
+    syncSliders();
+  }
+}
+
+function refreshUI() {
+  els.liveRoll.textContent = dispE.roll.toFixed(1) + '°';
+  els.livePitch.textContent = dispE.pitch.toFixed(1) + '°';
+  els.liveYaw.textContent = dispE.yaw.toFixed(1) + '°';
+  els.liveQ0.textContent = dispQ[0].toFixed(4);
+  els.liveQ1.textContent = dispQ[1].toFixed(4);
+  els.liveQ2.textContent = dispQ[2].toFixed(4);
+  els.liveQ3.textContent = dispQ[3].toFixed(4);
+  drawChart();
+}
+
+function animate(now) {
+  requestAnimationFrame(animate);
+  simTick(now);
+  updatePose();
+  if (model) setModelQuat(dispQ);
+  if (mode === 'sim') pushSample();
+  if (now - lastUi > 100) { lastUi = now; refreshUI(); }
+  if (controls) controls.update();
+  if (renderer) renderer.render(scene, camera);
+}
+
+/* ========== 启动 ========== */
+computeFlipQ();
+syncSliders();
+setMode('live');
+
+function showFallback() {
+  els.stageErr.hidden = false;
+  els.stageErr.textContent = '无法加载 3D 引擎（本地文件缺失且 CDN 不可达）。模拟读数与曲线仍可使用。';
+  setInterval(() => { simTick(Date.now()); updatePose(); if (mode === 'sim') pushSample(); refreshUI(); }, 100);
+}
+
+function bootLocal() {
+  try {
+    if (init3D()) { requestAnimationFrame(animate); return true; }
+  } catch (_) {}
+  showFallback();
+  return false;
+}
+
+if (typeof THREE !== 'undefined') {
+  /* 本地脚本已同步就绪：首帧在页面 load 前渲染 */
+  bootLocal();
+} else {
+  els.stageErr.hidden = false;
+  els.stageErr.textContent = '正在加载 3D 引擎（CDN）…';
+  loadThreeFromCDN()
+    .then(() => { if (bootLocal()) els.stageErr.hidden = true; })
+    .catch(() => showFallback());
+}
+setInterval(() => {
+  els.liveRate.textContent = frames + ' 帧/秒';
+  frames = 0;
+}, 1000);
+
+})();
+</script>
+</body>
+</html>
